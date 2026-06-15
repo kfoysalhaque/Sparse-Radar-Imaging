@@ -36,6 +36,14 @@ def nmse_loss(pred, target, eps=1e-8):
     nmse = mse / denom
     return torch.mean(nmse)
 
+def weighted_l1_loss(pred, target, alpha=4.0, eps=1e-8):
+    """
+    Give more importance to strong radar reflection regions.
+    target is assumed to be scaled to [0, 1].
+    """
+    weight = 1.0 + alpha * target
+    loss = weight * torch.abs(pred - target)
+    return torch.sum(loss) / (torch.sum(weight) + eps)
 
 def train_one_epoch(
     model,
@@ -68,10 +76,10 @@ def train_one_epoch(
             pred = model(sparse)
 
         l1 = l1_criterion(pred, full)
+        weighted_l1 = weighted_l1_loss(pred, full, alpha=4.0)
         nmse = nmse_loss(pred, full)
 
-        # Main training loss
-        loss = l1 + 0.1 * nmse
+        loss = weighted_l1 + 0.1 * nmse
 
         loss.backward()
         optimizer.step()
@@ -203,7 +211,7 @@ def main():
     # ------------------------------------------------------------
     # Proposed model:
     model_name = "sparse_radar_recon"
-    model = SimpleCNNBaseline()
+    model = SparseRadarReconNet()
     use_mask = True
 
     # Baseline model:

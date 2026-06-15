@@ -124,7 +124,7 @@ RANDOM_SEED = 42
 # ============================================================
 
 BATCH_SIZE = 64
-NUM_EPOCHS = 300
+NUM_EPOCHS = 100
 LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 1e-5
 

@@ -123,8 +123,8 @@ RANDOM_SEED = 42
 # 8. Training settings
 # ============================================================
 
-BATCH_SIZE = 32
-NUM_EPOCHS = 100
+BATCH_SIZE = 64
+NUM_EPOCHS = 300
 LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 1e-5
 

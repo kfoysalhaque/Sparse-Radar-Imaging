@@ -203,7 +203,7 @@ def main():
     # ------------------------------------------------------------
     # Proposed model:
     model_name = "sparse_radar_recon"
-    model = SimpleCNNBaseline()
+    model = SparseRadarReconNet()
     use_mask = True
 
     # Baseline model:

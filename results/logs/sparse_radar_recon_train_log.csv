@@ -1,0 +1,1 @@
+epoch,train_loss,train_l1,train_nmse,val_loss,val_l1,val_nmse,epoch_time_sec

@@ -198,6 +198,7 @@ def evaluate(
     total_loss = 0.0
     total_l1 = 0.0
     total_mse = 0.0
+    total_baseline_mse = 0.0
     total_samples = 0
 
     l1_metric = nn.L1Loss(reduction="sum")
@@ -210,6 +211,7 @@ def evaluate(
         y = batch["target"].to(device, non_blocking=True)
 
         pred = model(x)
+
         loss = criterion(pred, y)
 
         bsz = x.shape[0]
@@ -217,6 +219,10 @@ def evaluate(
         total_loss += loss.item() * bsz
         total_l1 += l1_metric(pred, y).item()
         total_mse += mse_metric(pred, y).item()
+
+        # Baseline: directly compare input 1x4 with target 1x8
+        total_baseline_mse += mse_metric(x, y).item()
+
         total_samples += bsz
 
         if first_batch is None:
@@ -229,11 +235,16 @@ def evaluate(
     avg_mse = total_mse / num_pixels
     avg_psnr = psnr_from_mse(avg_mse)
 
+    avg_baseline_mse = total_baseline_mse / num_pixels
+    avg_baseline_psnr = psnr_from_mse(avg_baseline_mse)
+
     return {
         "loss": avg_loss,
         "l1": avg_l1,
         "mse": avg_mse,
         "psnr": avg_psnr,
+        "baseline_mse": avg_baseline_mse,
+        "baseline_psnr": avg_baseline_psnr,
         "first_batch": first_batch,
     }
 
@@ -381,7 +392,8 @@ def main():
             f"train_psnr={train_metrics['psnr']:.2f} | "
             f"val_loss={val_metrics['loss']:.6f} "
             f"val_l1={val_metrics['l1']:.6f} "
-            f"val_psnr={val_metrics['psnr']:.2f}"
+            f"val_psnr={val_metrics['psnr']:.2f} "
+            f"baseline_psnr={val_metrics['baseline_psnr']:.2f}"
         )
 
         latest_path = ckpt_dir / "latest.pt"

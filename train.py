@@ -13,6 +13,8 @@ import torch.nn as nn
 from torch.cuda.amp import autocast, GradScaler
 import matplotlib.pyplot as plt
 
+from heatmap_dataloader import create_radar_heatmap_dataloaders
+from model_residual_attention import RadarHeatmapUNet, RadarHeatmapLoss, count_parameters
 
 PROJECT_ROOT = Path("/mnt/ssd-nas/foysal/Sparse")
 
@@ -152,7 +154,7 @@ def train_one_epoch(
         if use_amp:
             with autocast():
                 pred = model(x)
-                loss = criterion(pred, y)
+                loss = criterion(pred, y, x)
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -160,7 +162,7 @@ def train_one_epoch(
 
         else:
             pred = model(x)
-            loss = criterion(pred, y)
+            loss = criterion(pred, y, x)
             loss.backward()
             optimizer.step()
 
@@ -212,7 +214,7 @@ def evaluate(
 
         pred = model(x)
 
-        loss = criterion(pred, y)
+        loss = criterion(pred, y, x)
 
         bsz = x.shape[0]
 
@@ -290,9 +292,6 @@ def main():
     args = parser.parse_args()
 
     project_root = setup_project_root(Path(args.project_root))
-
-    from heatmap_dataloader import create_radar_heatmap_dataloaders
-    from model import RadarHeatmapUNet, RadarHeatmapLoss, count_parameters
 
     if args.device == "cuda" and not torch.cuda.is_available():
         print("CUDA is not available. Using CPU.")
@@ -443,6 +442,14 @@ def main():
     print("\nTraining finished.")
     print(f"Best val loss: {best_val_loss:.6f}")
     print(f"Best checkpoint: {ckpt_dir / 'best.pt'}")
+
+
+    best_path = ckpt_dir / "best.pt"
+
+    print(f"\nLoading best checkpoint for final test: {best_path}")
+
+    checkpoint = torch.load(best_path, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
 
     test_metrics = evaluate(
         model=model,

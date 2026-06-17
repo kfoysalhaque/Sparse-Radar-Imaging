@@ -3,7 +3,7 @@
 # raw ADC -> range FFT -> virtual MIMO channels -> angle FFT -> radar image
 
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -69,25 +69,75 @@ def get_common_db_scale(
     return vmin, vmax
 
 
-def get_fixed_mask(ratio: float) -> np.ndarray:
+def get_virtual_configuration(config_name: str) -> np.ndarray:
     """
-    Get fixed sparse MIMO channel mask from config.py.
+    Get virtual-array channel indices for a given configuration.
+
+    These configurations represent natural low-MIMO configurations.
+    They do not use sparse interleaved channel selection.
+
+    Virtual channel order:
+        [TX1-RX1, TX1-RX2, TX1-RX3, TX1-RX4,
+         TX2-RX1, TX2-RX2, TX2-RX3, TX2-RX4]
+
+    Natural low-MIMO interpretation:
+        1x8: full virtual MIMO reference
+        1x6: first six available virtual channels
+        1x4: one TX with four RX channels
+        1x2: one TX with two RX channels
     """
-    if ratio not in config.FIXED_MASKS:
+    configurations = {
+        "1x8": np.array([0, 1, 2, 3, 4, 5, 6, 7], dtype=np.int64),
+        "1x6": np.array([0, 1, 2, 3, 4, 5], dtype=np.int64),
+        "1x4": np.array([0, 1, 2, 3], dtype=np.int64),
+        "1x2": np.array([0, 1], dtype=np.int64),
+    }
+
+    if config_name not in configurations:
         raise ValueError(
-            f"Unknown sparse ratio {ratio}. "
-            f"Available ratios: {list(config.FIXED_MASKS.keys())}"
+            f"Unknown configuration {config_name}. "
+            f"Available configurations: {list(configurations.keys())}"
         )
 
-    mask = np.array(config.FIXED_MASKS[ratio], dtype=np.float32)
+    channel_indices = configurations[config_name]
 
-    if mask.shape[0] != config.NUM_VIRTUAL_CHANNELS:
+    if np.any(channel_indices < 0) or np.any(
+        channel_indices >= config.NUM_VIRTUAL_CHANNELS
+    ):
         raise ValueError(
-            f"Mask length must be {config.NUM_VIRTUAL_CHANNELS}, "
-            f"but got {mask.shape[0]}"
+            f"Configuration {config_name} contains invalid virtual channel indices"
         )
 
-    return mask
+    return channel_indices
+
+
+def get_available_configurations() -> Tuple[str, ...]:
+    """
+    Return the supported virtual-array configuration names.
+    """
+    return ("1x8", "1x6", "1x4", "1x2")
+
+
+def validate_configuration_names(config_names: Sequence[str]) -> Tuple[str, ...]:
+    """
+    Validate and normalize a list of configuration names.
+    """
+    if not config_names:
+        raise ValueError("At least one configuration must be selected")
+
+    available = set(get_available_configurations())
+    normalized = []
+
+    for config_name in config_names:
+        if config_name not in available:
+            raise ValueError(
+                f"Unknown configuration {config_name}. "
+                f"Available configurations: {list(get_available_configurations())}"
+            )
+        if config_name not in normalized:
+            normalized.append(config_name)
+
+    return tuple(normalized)
 
 
 # ============================================================
@@ -171,29 +221,34 @@ def form_virtual_array(radar_cube: np.ndarray) -> np.ndarray:
     return virtual_cube
 
 
-def apply_virtual_mask(
+def select_virtual_configuration(
     virtual_cube: np.ndarray,
-    mask: np.ndarray,
+    channel_indices: np.ndarray,
 ) -> np.ndarray:
     """
-    Apply sparse MIMO channel mask.
+    Select a reduced virtual-array configuration.
 
     Input:
         virtual_cube: [range_bins, chirps, virtual_channels]
-        mask: [virtual_channels], where 1=keep and 0=remove
+        channel_indices: [num_selected_channels]
     """
     if virtual_cube.ndim != 3:
         raise ValueError(f"virtual_cube must be 3D, got {virtual_cube.shape}")
 
-    mask = np.asarray(mask, dtype=np.float32)
+    channel_indices = np.asarray(channel_indices, dtype=np.int64)
 
-    if mask.shape[0] != virtual_cube.shape[-1]:
+    if channel_indices.ndim != 1:
+        raise ValueError("channel_indices must be a 1D array")
+
+    if np.any(channel_indices < 0) or np.any(
+        channel_indices >= virtual_cube.shape[-1]
+    ):
         raise ValueError(
-            f"Mask length {mask.shape[0]} does not match "
-            f"virtual channels {virtual_cube.shape[-1]}"
+            f"Configuration indices out of bounds for virtual cube with "
+            f"{virtual_cube.shape[-1]} channels"
         )
 
-    return virtual_cube * mask.reshape(1, 1, -1)
+    return virtual_cube[:, :, channel_indices]
 
 
 def angle_fft(
@@ -232,7 +287,7 @@ def angle_fft(
 
 def make_radar_image(
     adc_data: np.ndarray,
-    mask: Optional[np.ndarray] = None,
+    channel_indices: Optional[np.ndarray] = None,
     mode: str = "clutter_removed",
     suppress_horizontal: bool = True,
     zero_near_range_bins: int = 2,
@@ -267,9 +322,9 @@ def make_radar_image(
     # Step 2: Virtual MIMO array
     v_cube = form_virtual_array(r_cube)  # [R, C, V]
 
-    # Step 3: Apply sparse MIMO mask
-    if mask is not None:
-        v_cube = apply_virtual_mask(v_cube, mask)
+    # Step 3: Select virtual-array configuration
+    if channel_indices is not None:
+        v_cube = select_virtual_configuration(v_cube, channel_indices)
 
     # Step 4: Angle FFT
     a_cube = angle_fft(v_cube, use_window=False)  # [R, C, A]
@@ -350,36 +405,37 @@ def save_preprocessing_ablation(
     plt.close()
 
 
-def save_full_vs_sparse(
-    full_img: np.ndarray,
-    sparse_img: np.ndarray,
+def save_configuration_pair_comparison(
+    left_img: np.ndarray,
+    right_img: np.ndarray,
     save_path: Path,
-    sparse_ratio: float,
+    left_name: str,
+    right_name: str,
     dynamic_range_db: float = 45.0,
 ) -> None:
     """
-    Save full-channel vs one sparse-channel radar image.
+    Save a side-by-side comparison for any two configurations.
     """
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
     vmin, vmax = get_common_db_scale(
-        [full_img, sparse_img],
+        [left_img, right_img],
         dynamic_range_db=dynamic_range_db,
     )
 
     plt.figure(figsize=(11, 4))
 
     plt.subplot(1, 2, 1)
-    plt.imshow(full_img, aspect="auto", origin="lower", vmin=vmin, vmax=vmax)
-    plt.title("Full 8-Channel Image")
+    plt.imshow(left_img, aspect="auto", origin="lower", vmin=vmin, vmax=vmax)
+    plt.title(f"Configuration {left_name}")
     plt.xlabel("Angle bin")
     plt.ylabel("Range bin")
     plt.colorbar(label="dB")
 
     plt.subplot(1, 2, 2)
-    plt.imshow(sparse_img, aspect="auto", origin="lower", vmin=vmin, vmax=vmax)
-    plt.title(f"Sparse Image ({int(sparse_ratio * 100)}%)")
+    plt.imshow(right_img, aspect="auto", origin="lower", vmin=vmin, vmax=vmax)
+    plt.title(f"Configuration {right_name}")
     plt.xlabel("Angle bin")
     plt.ylabel("Range bin")
     plt.colorbar(label="dB")
@@ -389,44 +445,35 @@ def save_full_vs_sparse(
     plt.close()
 
 
-def save_sparse_ratio_comparison(
-    images_by_ratio: Dict[float, np.ndarray],
+def save_configuration_comparison(
+    images_by_config: Dict[str, np.ndarray],
     save_path: Path,
     dynamic_range_db: float = 45.0,
 ) -> None:
     """
-    Save comparison across different sparse MIMO channel ratios.
-
-    Expected keys:
-        1.0, 0.75, 0.5, 0.25
+    Save comparison across different virtual-array configurations.
     """
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
-    ratios = sorted(images_by_ratio.keys(), reverse=True)
-    images = [images_by_ratio[r] for r in ratios]
+    available_configs = list(images_by_config.keys())
+    images = [images_by_config[name] for name in available_configs]
 
     vmin, vmax = get_common_db_scale(images, dynamic_range_db=dynamic_range_db)
 
-    plt.figure(figsize=(4 * len(ratios), 4))
+    plt.figure(figsize=(4 * len(available_configs), 4))
 
-    for i, ratio in enumerate(ratios):
-        plt.subplot(1, len(ratios), i + 1)
+    for i, config_name in enumerate(available_configs):
+        plt.subplot(1, len(available_configs), i + 1)
         plt.imshow(
-            images_by_ratio[ratio],
+            images_by_config[config_name],
             aspect="auto",
             origin="lower",
             vmin=vmin,
             vmax=vmax,
         )
 
-        if ratio == 1.0:
-            title = "Full 8 Channels"
-        else:
-            kept = int(round(ratio * config.NUM_VIRTUAL_CHANNELS))
-            title = f"{kept}/8 Channels"
-
-        plt.title(title)
+        plt.title(config_name)
         plt.xlabel("Angle bin")
         if i == 0:
             plt.ylabel("Range bin")
@@ -479,14 +526,29 @@ if __name__ == "__main__":
     print(f"ADC dtype: {adc.dtype}")
     print(f"Complex: {np.iscomplexobj(adc)}")
 
-    full_mask = get_fixed_mask(1.0)
+    preprocessing_config = validate_configuration_names(["1x8"])[0]
+
+    # Choose which configurations to generate and compare here.
+    selected_configs = validate_configuration_names(["1x8", "1x6", "1x4", "1x2"])
+    comparison_pair = validate_configuration_names(["1x8", "1x4"])
+
+    if len(comparison_pair) != 2:
+        raise ValueError("comparison_pair must contain exactly two configurations")
+
+    if not set(comparison_pair).issubset(set(selected_configs)):
+        raise ValueError(
+            "comparison_pair must be included in selected_configs so the images "
+            "are generated before comparison"
+        )
+
+    preprocessing_channels = get_virtual_configuration(preprocessing_config)
 
     # ------------------------------------------------------------
     # 1. Preprocessing ablation images
     # ------------------------------------------------------------
     raw_img = make_radar_image(
         adc,
-        mask=full_mask,
+        channel_indices=preprocessing_channels,
         mode="raw",
         suppress_horizontal=False,
         use_db=True,
@@ -495,7 +557,7 @@ if __name__ == "__main__":
 
     clutter_img = make_radar_image(
         adc,
-        mask=full_mask,
+        channel_indices=preprocessing_channels,
         mode="clutter_removed",
         suppress_horizontal=False,
         use_db=True,
@@ -504,7 +566,7 @@ if __name__ == "__main__":
 
     final_full_img = make_radar_image(
         adc,
-        mask=full_mask,
+        channel_indices=preprocessing_channels,
         mode="clutter_removed",
         suppress_horizontal=True,
         use_db=True,
@@ -512,25 +574,27 @@ if __name__ == "__main__":
     )
 
     # ------------------------------------------------------------
-    # 2. Full and sparse images
+    # 2. Full and reduced-configuration images
     # ------------------------------------------------------------
-    images_by_ratio = {}
+    images_by_config = {}
 
-    for ratio in [1.0, 0.75, 0.5, 0.25]:
-        mask = get_fixed_mask(ratio)
+    for config_name in selected_configs:
+        channel_indices = get_virtual_configuration(config_name)
 
         img = make_radar_image(
             adc,
-            mask=mask,
+            channel_indices=channel_indices,
             mode="clutter_removed",
             suppress_horizontal=True,
             use_db=True,
             normalize=False,
         )
 
-        images_by_ratio[ratio] = img
+        images_by_config[config_name] = img
 
-    sparse_50_img = images_by_ratio[0.5]
+    left_config_name, right_config_name = comparison_pair
+    left_config_img = images_by_config[left_config_name]
+    right_config_img = images_by_config[right_config_name]
 
     # ------------------------------------------------------------
     # 3. Save only necessary visualization figures
@@ -546,21 +610,22 @@ if __name__ == "__main__":
         dynamic_range_db=45.0,
     )
 
-    save_sparse_ratio_comparison(
-        images_by_ratio,
-        out_dir / "sparse_ratios_comparison.png",
+    save_configuration_comparison(
+        images_by_config,
+        out_dir / "configuration_comparison.png",
         dynamic_range_db=45.0,
     )
 
-    save_full_vs_sparse(
-        final_full_img,
-        sparse_50_img,
-        out_dir / "full_vs_sparse_50.png",
-        sparse_ratio=0.5,
+    save_configuration_pair_comparison(
+        left_config_img,
+        right_config_img,
+        out_dir / f"{left_config_name}_vs_{right_config_name}.png",
+        left_name=left_config_name,
+        right_name=right_config_name,
         dynamic_range_db=45.0,
     )
 
     print("Saved necessary visualization figures:")
     print(f"  {out_dir / 'processing_ablation.png'}")
-    print(f"  {out_dir / 'sparse_ratios_comparison.png'}")
-    print(f"  {out_dir / 'full_vs_sparse_50.png'}")
+    print(f"  {out_dir / 'configuration_comparison.png'}")
+    print(f"  {out_dir / f'{left_config_name}_vs_{right_config_name}.png'}")

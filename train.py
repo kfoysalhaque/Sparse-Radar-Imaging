@@ -14,7 +14,7 @@ from torch.cuda.amp import autocast, GradScaler
 import matplotlib.pyplot as plt
 
 
-PROJECT_ROOT = Path("/media/foysal/Foysal-2/Github/Sparse-Radar-Imaging")
+PROJECT_ROOT = Path("/mnt/ssd-nas/foysal/Sparse")
 
 
 def setup_project_root(project_root: Path):
